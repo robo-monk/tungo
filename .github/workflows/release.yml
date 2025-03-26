@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*' # This will trigger on any tag that starts with 'v'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Build releases
+        run: |
+          set -euo pipefail
+          
+          # Define platforms
+          PLATFORMS=(
+            "linux-amd64"
+            "linux-arm64"
+            "darwin-amd64"
+            "darwin-arm64"
+          )
+          
+          # Create release directory
+          mkdir -p releases
+          
+          # Build for all platforms
+          for platform in "${PLATFORMS[@]}"; do
+            OS=$(echo $platform | cut -d'-' -f1)
+            ARCH=$(echo $platform | cut -d'-' -f2)
+            
+            echo "Building for $OS/$ARCH..."
+            
+            # Set environment variables for cross-compilation
+            export GOOS=$OS
+            export GOARCH=$ARCH
+            
+            # Build the binaries
+            make build
+            
+            # Create tarballs
+            tar -czf "releases/tungo-client-$platform.tar.gz" -C bin client
+            tar -czf "releases/tungo-server-$platform.tar.gz" -C bin server
+            
+            echo "✅ Completed build for $platform"
+          done
+          
+          echo "All releases created successfully!"
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: |
+            releases/tungo-client-linux-amd64.tar.gz
+            releases/tungo-client-linux-arm64.tar.gz
+            releases/tungo-client-darwin-amd64.tar.gz
+            releases/tungo-client-darwin-arm64.tar.gz
+            releases/tungo-server-linux-amd64.tar.gz
+            releases/tungo-server-linux-arm64.tar.gz
+            releases/tungo-server-darwin-amd64.tar.gz
+            releases/tungo-server-darwin-arm64.tar.gz
+          body: |
+            # ${{ github.ref_name }} Release
+            Download the server and client for the platform you need from the releases section
+
+            ### Server Executables
+            ```bash
+            # Linux amd64
+            curl -L https://github.com/robo-monk/tungo/releases/download/${{ github.ref_name }}/tungo-server-linux-amd64.tar.gz | tar -xzf -
+            # Linux arm64
+            curl -L https://github.com/robo-monk/tungo/releases/download/${{ github.ref_name }}/tungo-server-linux-arm64.tar.gz | tar -xzf -
+            # macOS amd64
+            curl -L https://github.com/robo-monk/tungo/releases/download/${{ github.ref_name }}/tungo-server-darwin-amd64.tar.gz | tar -xzf -
+            # macOS arm64
+            curl -L https://github.com/robo-monk/tungo/releases/download/${{ github.ref_name }}/tungo-server-darwin-arm64.tar.gz | tar -xzf -
+            ```
+
+            ### Client Executables
+            ```bash
+            # Linux amd64
+            curl -L https://github.com/robo-monk/tungo/releases/download/${{ github.ref_name }}/tungo-client-linux-amd64.tar.gz | tar -xzf -
+            # Linux arm64
+            curl -L https://github.com/robo-monk/tungo/releases/download/${{ github.ref_name }}/tungo-client-linux-arm64.tar.gz | tar -xzf -
+            # macOS amd64
+            curl -L https://github.com/robo-monk/tungo/releases/download/${{ github.ref_name }}/tungo-client-darwin-amd64.tar.gz | tar -xzf -
+            # macOS arm64
+            curl -L https://github.com/robo-monk/tungo/releases/download/${{ github.ref_name }}/tungo-client-darwin-arm64.tar.gz | tar -xzf -
+            ```
