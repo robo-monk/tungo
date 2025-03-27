@@ -61,12 +61,26 @@ func (c *Client) Connect(ctx context.Context) error {
 		wsURL.Scheme = "wss"
 	}
 
+	// Connect to WebSocket with more robust options
+	dialer := websocket.DefaultDialer
+	dialer.HandshakeTimeout = 10 * time.Second
+
 	// Connect to WebSocket
 	log.Printf("Connecting to %s", wsURL.String())
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL.String(), nil)
+	conn, _, err := dialer.DialContext(ctx, wsURL.String(), nil)
 	if err != nil {
 		return fmt.Errorf("error connecting to WebSocket: %w", err)
 	}
+
+	// Set read deadline to detect stale connections
+	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+
+	// Setup ping handler to keep connection alive
+	conn.SetPingHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+
 	c.conn = conn
 
 	log.Println("WebSocket connection established")
@@ -75,8 +89,27 @@ func (c *Client) Connect(ctx context.Context) error {
 
 // Start begins processing WebSocket messages
 func (c *Client) Start(ctx context.Context) error {
+	log.Println("Starting client")
 	// Set up signal handling for graceful shutdown
 	signal.Notify(c.interrupt, os.Interrupt, syscall.SIGTERM)
+
+	// Start a goroutine to send periodic pings to keep connection alive
+	pingTicker := time.NewTicker(20 * time.Second)
+	defer pingTicker.Stop()
+
+	go func() {
+		for {
+			select {
+			case <-pingTicker.C:
+				log.Println("Sending ping")
+				if err := c.conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(5*time.Second)); err != nil {
+					log.Printf("Error sending ping: %v", err)
+				}
+			case <-c.done:
+				return
+			}
+		}
+	}()
 
 	// Handle interrupts
 	go func() {
@@ -116,6 +149,17 @@ func (c *Client) Start(ctx context.Context) error {
 					websocket.CloseNormalClosure,
 					websocket.CloseGoingAway,
 				) {
+					log.Printf("Unexpected close error: %v", err)
+
+					// Try to reconnect if this was an abnormal closure
+					if websocket.IsCloseError(err, websocket.CloseAbnormalClosure) {
+						log.Println("Attempting to reconnect...")
+						if reconnectErr := c.reconnect(ctx); reconnectErr != nil {
+							return fmt.Errorf("failed to reconnect: %w", reconnectErr)
+						}
+						continue
+					}
+
 					return fmt.Errorf("unexpected close error: %w", err)
 				}
 				log.Println("WebSocket connection closed")
@@ -123,10 +167,50 @@ func (c *Client) Start(ctx context.Context) error {
 				return nil
 			}
 
+			// Reset read deadline after successful read
+			c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+
 			// Process message asynchronously
 			go c.handleMessage(data)
 		}
 	}
+}
+
+// reconnect attempts to re-establish the WebSocket connection
+func (c *Client) reconnect(ctx context.Context) error {
+	// First close the existing connection if it exists
+	if c.conn != nil {
+		c.conn.Close()
+	}
+
+	// Implement exponential backoff for reconnection
+	backoff := 1 * time.Second
+	maxBackoff := 30 * time.Second
+
+	for i := 0; i < 5; i++ { // Try to reconnect up to 5 times
+		log.Printf("Reconnection attempt %d in %v", i+1, backoff)
+
+		select {
+		case <-time.After(backoff):
+			// Try to connect
+			if err := c.Connect(ctx); err == nil {
+				log.Println("Successfully reconnected")
+				return nil
+			} else {
+				log.Printf("Reconnection failed: %v", err)
+			}
+
+			// Increase backoff for next attempt
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled during reconnection")
+		}
+	}
+
+	return fmt.Errorf("failed to reconnect after multiple attempts")
 }
 
 // handleMessage processes an incoming WebSocket message

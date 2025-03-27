@@ -107,13 +107,49 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set ping handler to automatically respond with pongs
+	conn.SetPingHandler(func(pingData string) error {
+		log.Println("Received ping, responding with pong")
+		return conn.WriteControl(websocket.PongMessage, []byte(pingData), time.Now().Add(5*time.Second))
+	})
+
+	// Set read deadline and update it on any message
+	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+
+	// Set pong handler to update read deadline
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+
 	s.wsConnMu.Lock()
 	s.wsConn = conn
 	s.wsConnMu.Unlock()
 
 	log.Println("WebSocket opened")
 
+	// Start a goroutine to send periodic pings to keep connection alive
+	pingTicker := time.NewTicker(20 * time.Second)
+	pingDone := make(chan struct{})
+
+	go func() {
+		defer pingTicker.Stop()
+		for {
+			select {
+			case <-pingTicker.C:
+				if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(5*time.Second)); err != nil {
+					log.Printf("Error sending server ping: %v", err)
+					return
+				}
+				log.Println("Server ping sent")
+			case <-pingDone:
+				return
+			}
+		}
+	}()
+
 	defer func() {
+		close(pingDone)
 		s.wsConnMu.Lock()
 		s.wsConn = nil
 		s.wsConnMu.Unlock()
@@ -125,9 +161,16 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
-			log.Printf("Error reading message: %v", err)
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+				log.Printf("Unexpected WebSocket error: %v", err)
+			} else {
+				log.Printf("WebSocket closed: %v", err)
+			}
 			break
 		}
+
+		// Update read deadline after successful read
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 
 		log.Println("WebSocket message received")
 
