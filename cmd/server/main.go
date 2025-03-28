@@ -267,7 +267,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Request ID: %d", id)
+	log.Printf("Request ID: %d, URL: %s", id, r.URL.String())
 
 	// Wait for response with timeout
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
